@@ -1,0 +1,103 @@
+name: catalog
+
+on:
+  schedule:
+    # every Monday 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    name: sync models.json from docs.z.ai
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: scrape latest-model.md and patch models.json
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -fsSL https://docs.z.ai/devpack/latest-model.md -o /tmp/latest-model.md
+          python3 - <<'PY'
+          import json, re, sys
+
+          doc = open("/tmp/latest-model.md", encoding="utf-8").read()
+          # ids end in an alphanumeric so trailing sentence punctuation is never captured
+          live = set(re.findall(r"\bglm-[0-9][a-z0-9.-]*[a-z0-9]", doc))
+
+          with open("models.json", encoding="utf-8") as f:
+              catalog = json.load(f)
+
+          known = set()
+          for p in catalog["providers"]:
+              for m in p["models"]:
+                  known.add(m["id"])
+
+          # family defaults for unknown window/output sizes (5.x -> 1M/128k,
+          # 4.x -> 200k/131072, 4.1v-thinking -> 65536/32768, flash 250414 -> 131072/16384)
+          def family_sizes(mid):
+              if mid.startswith("glm-5"):
+                  return 1000000, 128000
+              if "thinking" in mid:
+                  return 65536, 32768
+              if "250414" in mid:
+                  return 131072, 16384
+              return 200000, 131072
+
+          added = []
+          for mid in sorted(live - known):
+              ctx, out = family_sizes(mid)
+              modalities = ["image"] if "v" in mid.split("-")[1] else []
+              if not modalities:
+                  modalities = ["text"]
+              entry = {
+                  "id": mid,
+                  "kinds": ["anthropic"],
+                  "contextWindow": ctx,
+                  "maxOutputTokens": out,
+                  "modalities": modalities,
+                  "reasoning": False,
+                  "source": "docs",
+              }
+              for p in catalog["providers"]:
+                  p["models"].append(dict(entry))
+              added.append(mid)
+
+          with open("models.json", "w", encoding="utf-8") as f:
+              json.dump(catalog, f, indent=2, ensure_ascii=False)
+              f.write("\n")
+
+          if added:
+              print("added: " + ", ".join(added))
+              open("/tmp/added.txt", "w").write("\n".join(added))
+          else:
+              print("no new model ids")
+          PY
+
+      - name: open PR when models.json changed
+        if: hashFiles('models.json') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet models.json; then
+            echo "models.json unchanged"
+            exit 0
+          fi
+          branch="catalog-sync-$(date +%Y%m%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add models.json
+          git commit -m "catalog: sync model ids from docs.z.ai
+
+          Automated weekly sync; adds new model ids with family-default sizes
+          and \"source\": \"docs\". Removals are never automated."
+          git push origin "$branch"
+          body="Automated catalog sync. $(cat /tmp/added.txt 2>/dev/null || echo 'models.json updated')"
+          gh pr create --base main --head "$branch" \
+            --title "catalog: sync models from docs.z.ai" \
+            --body "$body"

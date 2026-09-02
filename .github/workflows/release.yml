@@ -1,0 +1,87 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build and upload ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: install cross (aarch64 linux)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
+            cross build --release --target "${{ matrix.target }}"
+          else
+            cargo build --release --target "${{ matrix.target }}"
+          fi
+
+      - name: package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          case "${{ matrix.target }}" in
+            *linux*) os="linux" ;;
+            *darwin*) os="darwin" ;;
+          esac
+          case "${{ matrix.target }}" in
+            x86_64-*) arch="x86_64" ;;
+            aarch64-*) arch="aarch64" ;;
+          esac
+          stem="glm-${os}-${arch}"
+          mkdir -p "dist/${stem}"
+          cp "target/${{ matrix.target }}/release/glm" "dist/${stem}/glm"
+          tar -C dist -czf "dist/${stem}.tar.gz" "${stem}/glm"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/glm-*.tar.gz
+
+  release:
+    name: publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: checksums
+        working-directory: artifacts
+        run: sha256sum glm-*.tar.gz > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/glm-*.tar.gz
+            artifacts/SHA256SUMS
+          generate_release_notes: true
