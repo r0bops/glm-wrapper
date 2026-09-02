@@ -1,0 +1,137 @@
+{
+  "schemaVersion": "zcode.model-providers.v1",
+  "providers": [
+    {
+      "id": "zai",
+      "name": "Z.ai",
+      "defaultKind": "anthropic",
+      "endpoints": {
+        "baseURL": "https://api.z.ai",
+        "paths": {
+          "anthropic": "/api/anthropic/v1/messages"
+        }
+      },
+      "models": [
+        { "id": "glm-5.3", "kinds": ["anthropic"], "contextWindow": 1000000, "maxOutputTokens": 128000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5.3-flash", "kinds": ["anthropic"], "contextWindow": 1000000, "maxOutputTokens": 128000, "modalities": ["text", "image"], "reasoning": true },
+        { "id": "glm-5.1", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 64000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5.1-highspeed", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 64000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 64000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5-turbo", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 64000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5v-turbo", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text", "image"], "reasoning": true },
+        { "id": "glm-4.7", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.7-flashx", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.7-flash", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.6", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.6v", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": false },
+        { "id": "glm-4.6v-flash", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": false },
+        { "id": "glm-4.6v-flashx", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": false },
+        { "id": "glm-4.5", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 98304, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.5-air", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 98304, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.1v-thinking-flash", "kinds": ["anthropic"], "contextWindow": 65536, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": true },
+        { "id": "glm-4.1v-thinking-flashx", "kinds": ["anthropic"], "contextWindow": 65536, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": true },
+        { "id": "glm-4-flash-250414", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 16384, "modalities": ["text"], "reasoning": false },
+        { "id": "glm-4-flashx-250414", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 16384, "modalities": ["text"], "reasoning": false }
+      ]
+    },
+    {
+      "id": "zai-coding-plan",
+      "name": "Z.ai Coding Plan",
+      "defaultKind": "anthropic",
+      "endpoints": {
+        "baseURL": "https://api.z.ai",
+        "paths": {
+          "anthropic": "/api/anthropic/v1/messages"
+        }
+      },
+      "models": [
+        { "id": "glm-5.3", "kinds": ["anthropic"], "contextWindow": 1000000, "maxOutputTokens": 128000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5.3-flash", "kinds": ["anthropic"], "contextWindow": 1000000, "maxOutputTokens": 128000, "modalities": ["text", "image"], "reasoning": true },
+        { "id": "glm-5.1", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 64000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5.1-highspeed", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 64000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 64000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5-turbo", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 64000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5v-turbo", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text", "image"], "reasoning": true },
+        { "id": "glm-4.7", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.7-flashx", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.7-flash", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.6", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.6v", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": false },
+        { "id": "glm-4.6v-flash", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": false },
+        { "id": "glm-4.6v-flashx", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": false },
+        { "id": "glm-4.5", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 98304, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.5-air", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 98304, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.1v-thinking-flash", "kinds": ["anthropic"], "contextWindow": 65536, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": true },
+        { "id": "glm-4.1v-thinking-flashx", "kinds": ["anthropic"], "contextWindow": 65536, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": true },
+        { "id": "glm-4-flash-250414", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 16384, "modalities": ["text"], "reasoning": false },
+        { "id": "glm-4-flashx-250414", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 16384, "modalities": ["text"], "reasoning": false }
+      ]
+    },
+    {
+      "id": "bigmodel",
+      "name": "Zhipu BigModel",
+      "defaultKind": "anthropic",
+      "endpoints": {
+        "baseURL": "https://open.bigmodel.cn",
+        "paths": {
+          "anthropic": "/api/anthropic/v1/messages"
+        }
+      },
+      "models": [
+        { "id": "glm-5.3", "kinds": ["anthropic"], "contextWindow": 1000000, "maxOutputTokens": 128000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5.3-flash", "kinds": ["anthropic"], "contextWindow": 1000000, "maxOutputTokens": 128000, "modalities": ["text", "image"], "reasoning": true },
+        { "id": "glm-5.1", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 64000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5.1-highspeed", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 64000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 64000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5-turbo", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 64000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5v-turbo", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text", "image"], "reasoning": true },
+        { "id": "glm-4.7", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.7-flashx", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.7-flash", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.6", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.6v", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": false },
+        { "id": "glm-4.6v-flash", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": false },
+        { "id": "glm-4.6v-flashx", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": false },
+        { "id": "glm-4.5", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 98304, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.5-air", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 98304, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.1v-thinking-flash", "kinds": ["anthropic"], "contextWindow": 65536, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": true },
+        { "id": "glm-4.1v-thinking-flashx", "kinds": ["anthropic"], "contextWindow": 65536, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": true },
+        { "id": "glm-4-flash-250414", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 16384, "modalities": ["text"], "reasoning": false },
+        { "id": "glm-4-flashx-250414", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 16384, "modalities": ["text"], "reasoning": false }
+      ]
+    },
+    {
+      "id": "bigmodel-coding-plan",
+      "name": "Zhipu Coding Plan",
+      "defaultKind": "anthropic",
+      "endpoints": {
+        "baseURL": "https://open.bigmodel.cn",
+        "paths": {
+          "anthropic": "/api/anthropic/v1/messages"
+        }
+      },
+      "models": [
+        { "id": "glm-5.3", "kinds": ["anthropic"], "contextWindow": 1000000, "maxOutputTokens": 128000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5.3-flash", "kinds": ["anthropic"], "contextWindow": 1000000, "maxOutputTokens": 128000, "modalities": ["text", "image"], "reasoning": true },
+        { "id": "glm-5.1", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 64000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5.1-highspeed", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 64000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 64000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5-turbo", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 64000, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-5v-turbo", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text", "image"], "reasoning": true },
+        { "id": "glm-4.7", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.7-flashx", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.7-flash", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.6", "kinds": ["anthropic"], "contextWindow": 200000, "maxOutputTokens": 131072, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.6v", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": false },
+        { "id": "glm-4.6v-flash", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": false },
+        { "id": "glm-4.6v-flashx", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": false },
+        { "id": "glm-4.5", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 98304, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.5-air", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 98304, "modalities": ["text"], "reasoning": true },
+        { "id": "glm-4.1v-thinking-flash", "kinds": ["anthropic"], "contextWindow": 65536, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": true },
+        { "id": "glm-4.1v-thinking-flashx", "kinds": ["anthropic"], "contextWindow": 65536, "maxOutputTokens": 32768, "modalities": ["text", "image"], "reasoning": true },
+        { "id": "glm-4-flash-250414", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 16384, "modalities": ["text"], "reasoning": false },
+        { "id": "glm-4-flashx-250414", "kinds": ["anthropic"], "contextWindow": 131072, "maxOutputTokens": 16384, "modalities": ["text"], "reasoning": false }
+      ]
+    }
+  ]
+}
