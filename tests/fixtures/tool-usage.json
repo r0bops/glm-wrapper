@@ -1,0 +1,11 @@
+{
+  "code": 0,
+  "msg": "success",
+  "success": true,
+  "data": {
+    "usageDetails": [
+      { "toolName": "Read", "usage": 121, "inputTokens": 1000000, "outputTokens": 2000000 },
+      { "toolName": "Edit", "usage": 89, "inputTokens": 500000, "outputTokens": 1000000 }
+    ]
+  }
+}

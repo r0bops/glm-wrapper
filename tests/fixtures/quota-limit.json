@@ -1,0 +1,47 @@
+{
+  "code": 0,
+  "msg": "success",
+  "success": true,
+  "data": {
+    "limits": [
+      {
+        "type": "TOKENS_LIMIT",
+        "unit": 5,
+        "number": 1,
+        "usage": 12000000,
+        "currentValue": 12000000,
+        "remaining": 28000000,
+        "percentage": 30,
+        "nextResetTime": 1756838400000,
+        "usageDetails": [
+          { "modelCode": "glm-4.6", "displayName": "GLM-4.6", "usage": 4000000 },
+          { "modelCode": "glm-5.3", "displayName": "GLM-5.3", "usage": 8000000 }
+        ]
+      },
+      {
+        "type": "TOKENS_LIMIT",
+        "unit": 6,
+        "number": 1,
+        "usage": 60000000,
+        "currentValue": 60000000,
+        "remaining": 140000000,
+        "percentage": 30,
+        "nextResetTime": 1757001600000,
+        "usageDetails": [
+          { "modelCode": "glm-5.3", "displayName": "GLM-5.3", "usage": 60000000 }
+        ]
+      },
+      {
+        "type": "TIME_LIMIT",
+        "unit": 1,
+        "number": 1,
+        "usage": 3,
+        "currentValue": 3,
+        "remaining": 57,
+        "percentage": 5,
+        "nextResetTime": 1756838400000,
+        "usageDetails": []
+      }
+    ]
+  }
+}

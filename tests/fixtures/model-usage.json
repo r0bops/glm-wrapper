@@ -1,0 +1,11 @@
+{
+  "code": 0,
+  "msg": "success",
+  "success": true,
+  "data": {
+    "usageDetails": [
+      { "modelCode": "glm-4.6", "displayName": "GLM-4.6", "inputTokens": 12000000, "outputTokens": 3000000, "totalTokens": 15000000 },
+      { "modelCode": "glm-5.3", "displayName": "GLM-5.3", "inputTokens": 20000000, "outputTokens": 5000000, "totalTokens": 25000000 }
+    ]
+  }
+}

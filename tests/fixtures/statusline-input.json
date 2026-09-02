@@ -1,0 +1,19 @@
+{
+  "session_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+  "cwd": "/home/dev/glm-wrapper",
+  "version": "2.1.258",
+  "model": {
+    "id": "glm-5.3",
+    "display_name": "GLM-5.3"
+  },
+  "context_window": {
+    "total_input_tokens": 120000,
+    "total_output_tokens": 512,
+    "context_window_size": 1000000,
+    "used_percentage": 12.0,
+    "remaining_percentage": 88.0
+  },
+  "output_style": {
+    "name": "default"
+  }
+}

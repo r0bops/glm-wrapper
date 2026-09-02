@@ -1,0 +1,10 @@
+{
+  "code": 0,
+  "msg": "success",
+  "success": true,
+  "data": {
+    "details": [
+      { "time": "2026-08-25 12:00:00", "displayName": "GLM-4.6", "modelCode": "glm-4.6", "usage": 1000000, "inputTokens": 700000, "outputTokens": 300000 }
+    ]
+  }
+}

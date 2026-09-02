@@ -1,0 +1,16 @@
+{
+  "code": 0,
+  "msg": "success",
+  "success": true,
+  "data": {
+    "limits": [
+      {
+        "type": "TIME_LIMIT",
+        "unit": 1,
+        "usage": 2,
+        "remaining": 58,
+        "percentage": 3.3
+      }
+    ]
+  }
+}

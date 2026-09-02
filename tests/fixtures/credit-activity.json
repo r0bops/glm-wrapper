@@ -1,0 +1,11 @@
+{
+  "code": 0,
+  "msg": "success",
+  "success": true,
+  "data": {
+    "activityList": [
+      { "displayName": "GLM-4.6", "modelCode": "glm-4.6", "count": 42, "inputTokens": 5000000, "outputTokens": 1000000 },
+      { "displayName": "GLM-5.3", "modelCode": "glm-5.3", "count": 17, "inputTokens": 9000000, "outputTokens": 3000000 }
+    ]
+  }
+}
