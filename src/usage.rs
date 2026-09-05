@@ -16,11 +16,20 @@ pub struct Row {
     pub value: String,
 }
 
-/// Output of one endpoint: section title, rows, or an error.
+/// Output of one endpoint: section title, rows, or an error. `note` carries
+/// a quiet status line for sections that are legitimately empty for this
+/// account (e.g. credit endpoints that only exist for pay-as-you-go).
 #[derive(Debug, Clone)]
 pub enum Section {
-    Ok { title: String, rows: Vec<Row> },
-    Err { title: String, message: String },
+    Ok {
+        title: String,
+        rows: Vec<Row>,
+        note: Option<String>,
+    },
+    Err {
+        title: String,
+        message: String,
+    },
 }
 
 /// Generic envelope for the usage endpoints (fields vary wildly; only the
@@ -121,6 +130,7 @@ pub fn section_from_body(title: &str, body: &str) -> Section {
         return Section::Ok {
             title: title.to_string(),
             rows: vec![],
+            note: None,
         };
     }
     let mut rows: Vec<Row> = Vec::new();
@@ -141,16 +151,20 @@ pub fn section_from_body(title: &str, body: &str) -> Section {
     Section::Ok {
         title: title.to_string(),
         rows,
+        note: None,
     }
 }
 
 pub fn format_section(s: &Section) -> String {
     match s {
         Section::Err { title, message } => format!("== {title} ==\nerror: {message}"),
-        Section::Ok { title, rows } => {
+        Section::Ok { title, rows, note } => {
             let mut out = format!("== {title} ==");
             if rows.is_empty() {
                 out.push_str("\n(no usage in range)");
+                if let Some(n) = note {
+                    out.push_str(&format!("\n({n})"));
+                }
             } else {
                 let w = rows
                     .iter()
@@ -235,6 +249,7 @@ fn quota_section(cfg: &ResolvedConfig, key: &str, timeout: Duration) -> Section 
             Section::Ok {
                 title: "quota/limit".into(),
                 rows,
+                note: None,
             }
         }
         Err(e) => Section::Err {
@@ -272,6 +287,36 @@ fn fetch_section(title: &str, url: &str, key: &str, timeout: Duration) -> Sectio
     }
 }
 
+/// Whether the error chain bottoms out in an HTTP 404.
+fn is_404(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<ureq::Error>()
+            .is_some_and(|u| matches!(u, ureq::Error::Status(404, _)))
+    })
+}
+
+/// Like `fetch_section`, but for endpoints that legitimately do not exist
+/// for some accounts: a 404 becomes a quiet note instead of an error block.
+fn fetch_optional_section(title: &str, url: &str, key: &str, timeout: Duration) -> Section {
+    match get_usage(url, key, timeout) {
+        Ok(body) => section_from_body(title, &body),
+        Err(e) => {
+            if is_404(&e) {
+                Section::Ok {
+                    title: title.into(),
+                    rows: vec![],
+                    note: Some("credit billing not available on this account".into()),
+                }
+            } else {
+                Section::Err {
+                    title: title.into(),
+                    message: format!("{e:#}"),
+                }
+            }
+        }
+    }
+}
+
 /// All sections for `glm usage`. Individual failures are reported per-section.
 pub fn collect(
     cfg: &ResolvedConfig,
@@ -295,8 +340,18 @@ pub fn collect(
     );
     out.push(fetch_section("model-usage", &model, key, timeout));
     out.push(fetch_section("tool-usage", &tool, key, timeout));
-    out.push(fetch_section("credit activity", &activity, key, timeout));
-    out.push(fetch_section("credit usage-detail", &detail, key, timeout));
+    out.push(fetch_optional_section(
+        "credit activity",
+        &activity,
+        key,
+        timeout,
+    ));
+    out.push(fetch_optional_section(
+        "credit usage-detail",
+        &detail,
+        key,
+        timeout,
+    ));
     out
 }
 
@@ -317,9 +372,10 @@ pub fn json_from_sections(sections: &[Section]) -> serde_json::Value {
     let mut arr = Vec::new();
     for s in sections {
         let obj = match s {
-            Section::Ok { title, rows } => serde_json::json!({
+            Section::Ok { title, rows, note } => serde_json::json!({
                 "endpoint": title, "ok": true,
                 "rows": rows.iter().map(|r| serde_json::json!({"name": r.name, "value": r.value})).collect::<Vec<_>>(),
+                "note": note,
             }),
             Section::Err { title, message } => {
                 serde_json::json!({ "endpoint": title, "ok": false, "error": message })
@@ -371,10 +427,45 @@ mod tests {
                     value: "2".into(),
                 },
             ],
+            note: None,
         };
         let txt = format_section(&sec);
         assert!(txt.contains("a         1"), "{txt}");
         assert!(txt.contains("longname  2"), "{txt}");
+    }
+
+    #[test]
+    fn is_404_detects_ureq_status_errors() {
+        let resp = ureq::Response::new(404, "Not Found", "").unwrap();
+        let err = anyhow::Error::new(ureq::Error::Status(404, resp));
+        assert!(is_404(&err));
+        let resp = ureq::Response::new(500, "Server Error", "").unwrap();
+        let err = anyhow::Error::new(ureq::Error::Status(500, resp));
+        assert!(!is_404(&err));
+        assert!(!is_404(&anyhow::anyhow!("plain error")));
+    }
+
+    #[test]
+    fn optional_404_renders_quiet_note() {
+        let sec = fetch_optional_section(
+            "credit activity",
+            "http://127.0.0.1:1/x", // nothing listens: ECONNREFUSED, not 404
+            "k",
+            std::time::Duration::from_millis(200),
+        );
+        match &sec {
+            Section::Err { message, .. } => assert!(!message.is_empty()),
+            Section::Ok { .. } => panic!("connection error must stay an error"),
+        }
+        // And a genuine 404 renders as a note, not an error.
+        let ok = Section::Ok {
+            title: "credit activity".into(),
+            rows: vec![],
+            note: Some("credit billing not available on this account".into()),
+        };
+        let txt = format_section(&ok);
+        assert!(txt.contains("(no usage in range)"), "{txt}");
+        assert!(txt.contains("credit billing not available"), "{txt}");
     }
 
     #[test]

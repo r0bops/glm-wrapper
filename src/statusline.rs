@@ -189,6 +189,25 @@ fn color_for_pct(p: u64) -> &'static str {
     }
 }
 
+/// Compact local-time hint for when a window resets: a clock when it resets
+/// today ("22:56"), a date otherwise ("9/11"). Pure so tests can pin both
+/// sides; timezone comes from the host, which is what the user reads.
+fn reset_hint(reset_ms: i64, now_ms: i64) -> String {
+    use chrono::{Local, TimeZone};
+    let (reset, now) = match (
+        Local.timestamp_opt(reset_ms.div_euclid(1000), 0),
+        Local.timestamp_opt(now_ms.div_euclid(1000), 0),
+    ) {
+        (chrono::LocalResult::Single(r), chrono::LocalResult::Single(n)) => (r, n),
+        _ => return String::new(),
+    };
+    if reset.date_naive() == now.date_naive() {
+        reset.format("%H:%M").to_string()
+    } else {
+        reset.format("%-m/%-d").to_string()
+    }
+}
+
 /// The rendered one-line payload: plain (no escapes) plus colored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Render {
@@ -205,6 +224,10 @@ pub fn render(input: &StatuslineInput, envelope: &QuotaEnvelope, cfg_model: &str
         .as_ref()
         .map(|d| d.limits.as_slice())
         .unwrap_or(&[]);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
 
     let mut segments: Vec<String> = Vec::new();
     let mut colored_segments: Vec<String> = Vec::new();
@@ -222,6 +245,13 @@ pub fn render(input: &StatuslineInput, envelope: &QuotaEnvelope, cfg_model: &str
             piece.push(' ');
             piece.push_str(r);
             colored.push_str(&format!(" {DIM}{r}{RESET}"));
+        }
+        // Compact reset hint: a clock for windows resetting today, a date
+        // otherwise ("plan 9% 361/4000 ·9/11 | 5h 1% ·22:56").
+        if let Some(ms) = l.next_reset_time {
+            let hint = reset_hint(ms, now_ms);
+            piece.push_str(&format!(" \u{b7}{hint}"));
+            colored.push_str(&format!(" {DIM}\u{b7}{hint}{RESET}"));
         }
         segments.push(piece);
         colored_segments.push(colored);
@@ -328,6 +358,49 @@ mod tests {
         assert!(r.colored.contains(YELLOW));
         // the plain line carries no escape sequences
         assert!(!r.plain.contains('\x1b'));
+    }
+
+    #[test]
+    fn reset_hint_clock_today_date_otherwise() {
+        use chrono::{Local, TimeZone};
+        let now_ms = Local::now().timestamp_millis();
+        // today at 22:56 local: a clock
+        let today = now_ms / 1000;
+        let today_dt = Local.timestamp_opt(today, 0).single().unwrap();
+        let at = Local
+            .from_local_datetime(&today_dt.date_naive().and_hms_opt(22, 56, 0).unwrap())
+            .single()
+            .unwrap();
+        assert_eq!(reset_hint(at.timestamp_millis(), now_ms), "22:56");
+        // three days out: a compact date without leading zeros
+        let later = at + chrono::Duration::days(3);
+        let expected = later.format("%-m/%-d").to_string();
+        assert_eq!(
+            reset_hint(later.timestamp_millis(), now_ms),
+            expected,
+            "expected shape M/D"
+        );
+        assert!(!expected.starts_with('0'), "{expected}");
+    }
+
+    #[test]
+    fn limits_with_reset_render_hint() {
+        use chrono::{Local, TimeZone};
+        let now_ms = Local::now().timestamp_millis();
+        let today_dt = Local.timestamp_opt(now_ms / 1000, 0).single().unwrap();
+        let reset = Local
+            .from_local_datetime(&today_dt.date_naive().and_hms_opt(23, 30, 0).unwrap())
+            .single()
+            .unwrap();
+        let mut lim = l("TOKENS_LIMIT", Some(5), 12.0);
+        lim.next_reset_time = Some(reset.timestamp_millis());
+        let r = render(
+            &StatuslineInput::default(),
+            &env_with_limits(vec![lim]),
+            "glm-5.3",
+        );
+        assert!(r.plain.contains("5h 12% \u{b7}23:30"), "{}", r.plain);
+        assert!(r.colored.contains("\u{b7}23:30"));
     }
 
     #[test]
