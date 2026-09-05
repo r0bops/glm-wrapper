@@ -46,6 +46,31 @@ pub fn settings_file() -> std::path::PathBuf {
     config_dir().join("settings.json")
 }
 
+/// Registry of live/recent interactive sessions.
+pub fn sessions_file() -> std::path::PathBuf {
+    config_dir().join("sessions.json")
+}
+
+/// Unix socket a backgrounded relay listens on for `glm attach`.
+pub fn relay_socket(pid: u32) -> std::path::PathBuf {
+    config_dir().join(format!("relay-{pid}.sock"))
+}
+
+/// Claude Code's config dir (`CLAUDE_CONFIG_DIR` or `~/.claude`).
+pub fn claude_dir() -> std::path::PathBuf {
+    if let Some(dir) = env::var_os("CLAUDE_CONFIG_DIR") {
+        return PathBuf::from(dir);
+    }
+    dirs::home_dir()
+        .map(|h| h.join(".claude"))
+        .unwrap_or_else(|| PathBuf::from(".claude"))
+}
+
+/// Directory of personal custom slash commands (`/name` -> `<name>.md`).
+pub fn claude_commands_dir() -> std::path::PathBuf {
+    claude_dir().join("commands")
+}
+
 /// Canonical path used for the statusline hook command and the env key.
 pub fn current_exe() -> std::path::PathBuf {
     static EXE: OnceLock<std::path::PathBuf> = OnceLock::new();
