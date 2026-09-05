@@ -335,6 +335,7 @@ dependencies = [
  "clap",
  "dirs",
  "flate2",
+ "libc",
  "serde",
  "serde_json",
  "sha2",

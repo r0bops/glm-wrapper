@@ -9,6 +9,8 @@ mod doctor;
 mod keys;
 mod paths;
 mod quota;
+mod registry;
+mod relay;
 mod run;
 mod self_update;
 mod statusline;
@@ -17,7 +19,7 @@ mod util;
 
 /// First-position words that are OUR subcommands, never passed to claude.
 /// `glm -- word` forwards any word (including these) to claude.
-const SUBCOMMAND_WORDS: [&str; 8] = [
+const SUBCOMMAND_WORDS: [&str; 11] = [
     "init",
     "config",
     "key",
@@ -26,6 +28,9 @@ const SUBCOMMAND_WORDS: [&str; 8] = [
     "statusline",
     "doctor",
     "self-update",
+    "sessions",
+    "attach",
+    "kill",
 ];
 
 /// Exposed for run.rs unit tests that share the reserved-word list.
@@ -35,6 +40,12 @@ pub fn main_sub_words() -> &'static [&'static str] {
 }
 
 fn main() {
+    // Unix CLI convention: dying silently on a closed pipe (`glm models |
+    // head`) beats Rust's default of panicking on EPIPE in every println.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let argv: Vec<String> = env::args().skip(1).collect();
     let code = match dispatch(argv) {
         Ok(code) => code,
@@ -93,6 +104,10 @@ fn print_help() {
          \x20 statusline   print the Claude Code status line (reads stdin)\n\
          \x20 doctor       environment checks\n\
          \x20 self-update  update from GitHub releases [--check]\n\
+         \x20 sessions     list glm sessions (live / backgrounded)\n\
+         \x20 attach [tgt]  reconnect to a backgrounded session (Ctrl-Q detaches)\n\
+         \x20 kill [tgt]    terminate agents (default: all); tgt = pid or\n\
+         \x20               unique 3+ char prefix of pid / session id\n\
          \n\
          Run `glm <command> --help` for options.",
         self_update::VERSION,
@@ -163,6 +178,18 @@ enum Sub {
         #[arg(long)]
         check: bool,
     },
+    /// List glm sessions (live and backgrounded)
+    Sessions,
+    /// Reconnect to a backgrounded session (most recent by default)
+    Attach {
+        /// glm/agent pid or session-id prefix (3+ chars, unique)
+        target: Option<String>,
+    },
+    /// Terminate tracked agent processes (all by default)
+    Kill {
+        /// glm/agent pid or session-id prefix (3+ chars, unique)
+        target: Option<String>,
+    },
     /// Print the config.toml path
     ConfigPath,
     /// Print the key path
@@ -232,23 +259,48 @@ fn cmd_claude(args: &[String]) -> Result<i32> {
     run::apply_env_plan(&plan);
     // 2. settings.json (regenerated on every run)
     let settings_path = paths::settings_file();
-    run::write_settings(&paths::current_exe(), &settings_path)?;
-    // 3. claude args
+    run::write_settings(&paths::current_exe(), &cfg, &settings_path)?;
+    // 3. the glm personal slash commands (idempotent; foreign files with the
+    // same names are never touched)
+    match run::install_personal_commands(&paths::claude_commands_dir()) {
+        Ok(actions) => {
+            for (name, action) in &actions {
+                if action.starts_with("kept") {
+                    eprintln!("glm: note: your own /{name} command was left untouched");
+                }
+            }
+        }
+        Err(e) => eprintln!("glm: warning: could not install slash commands: {e:#}"),
+    }
+    // 3b. surface backgrounded sessions so they are not forgotten
+    if relay::is_interactive(args) {
+        let bg: Vec<_> = registry::load(registry::pid_alive)
+            .into_iter()
+            .filter(|e| e.backgrounded)
+            .collect();
+        match bg.len() {
+            0 => {}
+            1 => eprintln!("glm: 1 backgrounded session - `glm attach` to resume it"),
+            n => eprintln!("glm: {n} backgrounded sessions - `glm attach` / `glm sessions`"),
+        }
+    }
+    // 4. claude args
     let mut final_args = args.to_vec();
     if !user_passed_settings(args) {
         final_args.push("--settings".to_string());
         final_args.push(settings_path.display().to_string());
     }
-    // 4. warn once when the model is not in the catalog
+    // 5. warn once when the model is not in the catalog
     if !catalog::is_known_model(&cfg.model) {
         eprintln!(
             "glm: warning: model {:?} is not in the bundled catalog; running claude anyway",
             catalog::api_model_id(&cfg.model)
         );
     }
-    // 5. exec claude (signals and exit codes pass through)
-    match run::exec_claude(&final_args) {
-        Ok(()) => unreachable!("exec_claude never returns Ok"),
+    // 6. run claude (interactive pty relay, else exec; signals and exit
+    // codes pass through)
+    match run::start_claude(&final_args) {
+        Ok(()) => unreachable!("start_claude never returns Ok"),
         Err(e) => {
             let missing = e
                 .chain()
@@ -272,6 +324,9 @@ fn run_sub(cli: &Cli) -> Result<i32> {
         Sub::Statusline => cmd_statusline(),
         Sub::Doctor => cmd_doctor(),
         Sub::SelfUpdate { check } => cmd_self_update(*check),
+        Sub::Sessions => cmd_sessions(),
+        Sub::Attach { target } => cmd_attach(target.as_deref()),
+        Sub::Kill { target } => cmd_kill(target.as_deref()),
         Sub::ConfigPath => {
             println!("{}", paths::config_file().display());
             Ok(0)
@@ -316,6 +371,8 @@ fn lookup_config_value(cfg: &config::ConfigFile, key: &str) -> Option<String> {
         "base_url" => cfg.base_url.clone(),
         "usage_quota_url" => cfg.usage_quota_url.clone(),
         "api_timeout_ms" => cfg.api_timeout_ms.map(|v| v.to_string()),
+        "effort" => cfg.effort.clone(),
+        "thinking_budget" => cfg.thinking_budget.map(|v| v.to_string()),
         "statusline.cache_ttl_secs" => cfg
             .statusline
             .as_ref()
@@ -339,6 +396,14 @@ fn set_config_value(cfg: &mut config::ConfigFile, key: &str, value: &str) -> boo
         "usage_quota_url" => cfg.usage_quota_url = Some(value.to_string()),
         "api_timeout_ms" => match value.parse() {
             Ok(v) => cfg.api_timeout_ms = Some(v),
+            Err(_) => return false,
+        },
+        "effort" => match config::normalize_effort(value) {
+            Ok(v) => cfg.effort = Some(v),
+            Err(_) => return false,
+        },
+        "thinking_budget" => match value.parse() {
+            Ok(v) => cfg.thinking_budget = Some(v),
             Err(_) => return false,
         },
         "statusline.cache_ttl_secs" => match value.parse() {
@@ -390,6 +455,12 @@ fn cmd_config(cmd: &ConfigCmd) -> Result<i32> {
             if !set_config_value(&mut cfg, key, value) {
                 if !valid_config_keys().contains(&key.as_str()) {
                     return unknown_config_key(key);
+                }
+                if key == "effort" {
+                    bail!(
+                        "invalid value for effort: {value:?}; valid values: {}",
+                        config::EFFORT_VALUES.join(", ")
+                    );
                 }
                 bail!("invalid value for {key}: {value:?}");
             }
@@ -455,6 +526,7 @@ fn cmd_models(refresh: bool, json: bool) -> Result<i32> {
                     "modalities": m.modalities,
                     "reasoning": m.reasoning,
                     "million": catalog::display_model_id(&m.id).ends_with("[1m]"),
+                    "effortLevels": catalog::effort_levels(&m.id),
                 })
             })
             .collect();
@@ -478,11 +550,18 @@ fn cmd_models(refresh: bool, json: bool) -> Result<i32> {
         } else {
             ""
         };
+        // Documented reasoning-effort values; "-" when the model has no
+        // effort parameter (server default applies).
+        let effort = match catalog::effort_levels(&m.id) {
+            Some(levels) => levels.join("/"),
+            None => "-".to_string(),
+        };
         println!(
-            "{:<22} ctx {:<8} max-out {:<8} {}{}",
+            "{:<22} ctx {:<8} max-out {:<8} {:<12} {}{}",
             m.id,
             win_txt,
             m.max_output_tokens,
+            effort,
             m.modalities.join("+"),
             one_m
         );
@@ -594,6 +673,85 @@ fn cmd_doctor() -> Result<i32> {
     Ok(0)
 }
 
+/// Resolve an optional target against the registry and attach. Exits with
+/// the agent's status; Err only means setup failed.
+fn cmd_attach(target: Option<&str>) -> Result<i32> {
+    let entries = registry::load(registry::pid_alive);
+    let pid = registry::resolve_target(&entries, target.unwrap_or(""))?.map(|e| e.pid);
+    relay::attach(pid)?;
+    Ok(1)
+}
+
+fn cmd_sessions() -> Result<i32> {
+    let entries = registry::load(registry::pid_alive);
+    if entries.is_empty() {
+        println!("no glm sessions");
+        return Ok(0);
+    }
+    println!(
+        "{:<8} {:<6} {:<22} {:<10} cwd",
+        "PID", "STATE", "SESSION", "STARTED"
+    );
+    for e in entries {
+        let state = if e.backgrounded { "bg" } else { "live" };
+        let started = fmt_relative(e.started_ms);
+        let sid = e
+            .sid
+            .as_deref()
+            .map(|s| s.chars().take(8).collect::<String>());
+        println!(
+            "{:<8} {:<6} {:<22} {:<10} {}",
+            e.pid,
+            state,
+            sid.as_deref().unwrap_or("-"),
+            started,
+            e.cwd
+        );
+    }
+    println!("\nattach: glm attach [pid]   kill: glm kill [pid]");
+    Ok(0)
+}
+
+/// "5s ago" / "3m ago" / "2h ago" style, compact for the table.
+fn fmt_relative(ms: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let s = ((now - ms).max(0) / 1000) as u64;
+    match s {
+        0..=59 => format!("{s}s ago"),
+        60..=3599 => format!("{}m ago", s / 60),
+        3600..=86399 => format!("{}h ago", s / 3600),
+        _ => format!("{}d ago", s / 86400),
+    }
+}
+
+/// Terminate tracked sessions. Default: all of them; a target (exact pid
+/// or unique 3+ char prefix of pid/session-id) kills one.
+fn cmd_kill(target: Option<&str>) -> Result<i32> {
+    let all = registry::load(registry::pid_alive);
+    let targets: Vec<_> = match target {
+        // resolve_target errors on ambiguity/non-match with a candidate list
+        Some(t) => vec![registry::resolve_target(&all, t)?.expect("non-empty target resolves")],
+        None => all.iter().collect(),
+    };
+    if targets.is_empty() {
+        println!("no glm sessions to kill");
+        return Ok(0);
+    }
+    for e in targets {
+        // The child is a session leader: SIGTERM to it takes claude (and
+        // any agents it spawned) down; the relay then exits and cleans up
+        // its own registry row.
+        unsafe {
+            libc::kill(e.child_pid as i32, libc::SIGTERM);
+        }
+        println!("killed session {} ({})", e.pid, e.cwd);
+    }
+    Ok(0)
+}
+
 fn cmd_self_update(check: bool) -> Result<i32> {
     let release = self_update::fetch_release(std::time::Duration::from_secs(20))?;
     let latest = release.tag_name.clone();
@@ -653,5 +811,17 @@ mod tests {
     #[test]
     fn help_and_version_work() {
         assert!(SUBCOMMAND_WORDS.contains(&"doctor"));
+    }
+
+    #[test]
+    fn effort_config_round_trip() {
+        let mut cfg = config::ConfigFile::default();
+        assert!(set_config_value(&mut cfg, "effort", "  MAX "));
+        assert_eq!(cfg.effort.as_deref(), Some("max"));
+        assert_eq!(lookup_config_value(&cfg, "effort").as_deref(), Some("max"));
+        assert!(!set_config_value(&mut cfg, "effort", "ultra"));
+        // clearing: not a set-able value, but an unset key reads as None
+        cfg.effort = None;
+        assert_eq!(lookup_config_value(&cfg, "effort"), None);
     }
 }
