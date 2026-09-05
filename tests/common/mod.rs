@@ -190,6 +190,8 @@ pub fn run_glm_cmd(args: &[&str], xdg: &std::path::Path, envs: &[(&str, &str)]) 
     let mut cmd = Command::new(glm_bin());
     cmd.args(args)
         .env("XDG_CONFIG_HOME", xdg)
+        // Keep the installed slash commands out of the developer's ~/.claude.
+        .env("CLAUDE_CONFIG_DIR", xdg.join("claude"))
         // An empty PATH dir: tests that expect "claude missing" must not
         // depend on where the host machine installed it.
         .env("PATH", empty_path_dir())

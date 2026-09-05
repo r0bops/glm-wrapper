@@ -8,11 +8,32 @@ use crate::catalog::{resolve_profile, Profile};
 
 /// Default values, also used when writing a fresh config.toml.
 pub const DEFAULT_MODEL: &str = "glm-5.3[1m]";
-pub const DEFAULT_SMALL_MODEL: &str = "glm-5.3-flash";
+/// Non-thinking tier for Claude Code's side calls (titles, summaries,
+/// classifiers): the glm-5.3 generation has thinking always on, so every
+/// side call through it would pay thinking tokens (docs.z.ai; AGENTS.md).
+pub const DEFAULT_SMALL_MODEL: &str = "glm-4.7-flash";
 pub const DEFAULT_API_TIMEOUT_MS: u64 = 3_000_000;
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 90;
 pub const DEFAULT_STATUSLINE_TIMEOUT_SECS: u64 = 5;
 pub const USAGE_TIMEOUT_SECS: u64 = 15;
+
+/// Reasoning-effort levels Claude Code accepts (forwarded as
+/// CLAUDE_CODE_EFFORT_LEVEL). Unset means "let Claude Code decide", which
+/// keeps the in-picker ←/→ adjustment working.
+pub const EFFORT_VALUES: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// Normalize and validate an effort value from config or env.
+pub fn normalize_effort(value: &str) -> Result<String> {
+    let v = value.trim().to_lowercase();
+    if EFFORT_VALUES.contains(&v.as_str()) {
+        Ok(v)
+    } else {
+        anyhow::bail!(
+            "invalid effort {value:?}; valid values: {}",
+            EFFORT_VALUES.join(", ")
+        )
+    }
+}
 
 /// Raw file contents. `deny_unknown_fields` is not used so that `set`/`unset`
 /// can detect every unknown key and so that the file round-trips; unknown keys
@@ -25,6 +46,8 @@ pub struct ConfigFile {
     pub base_url: Option<String>,
     pub usage_quota_url: Option<String>,
     pub api_timeout_ms: Option<u64>,
+    pub effort: Option<String>,
+    pub thinking_budget: Option<u64>,
     pub statusline: Option<StatuslineFile>,
 }
 
@@ -34,13 +57,15 @@ pub struct StatuslineFile {
     pub timeout_secs: Option<u64>,
 }
 
-pub const TOP_KEYS: [&str; 6] = [
+pub const TOP_KEYS: [&str; 8] = [
     "profile",
     "model",
     "small_model",
     "base_url",
     "usage_quota_url",
     "api_timeout_ms",
+    "effort",
+    "thinking_budget",
 ];
 pub const STATUSLINE_KEYS: [&str; 2] = ["cache_ttl_secs", "timeout_secs"];
 
@@ -70,6 +95,13 @@ pub struct ResolvedConfig {
     pub base_url: String,
     pub usage_quota_url: String,
     pub api_timeout_ms: u64,
+    /// Reasoning effort to pin for the session, or None to leave Claude
+    /// Code's own default (and in-picker adjustment) in charge.
+    pub effort: Option<String>,
+    /// Thinking-token budget (ZCode parity: 32000), forwarded as
+    /// MAX_THINKING_TOKENS. None keeps Claude Code's default; 0 disables
+    /// thinking entirely (only valid on models that can switch it off).
+    pub thinking_budget: Option<u64>,
     pub cache_ttl_secs: u64,
     pub statusline_timeout_secs: u64,
 }
@@ -205,6 +237,22 @@ pub fn resolve(
         .or_else(|| file.and_then(|f| f.api_timeout_ms))
         .unwrap_or(DEFAULT_API_TIMEOUT_MS);
 
+    let effort = match overrides
+        .get("effort")
+        .cloned()
+        .or_else(|| get_str("effort", None))
+        .or_else(|| file.and_then(|f| f.effort.clone()))
+    {
+        Some(raw) => Some(normalize_effort(&raw)?),
+        None => None,
+    };
+
+    let thinking_budget = overrides
+        .get("thinking_budget")
+        .and_then(|v| v.parse().ok())
+        .or_else(|| env_u64(&["GLM_THINKING_BUDGET"]))
+        .or_else(|| file.and_then(|f| f.thinking_budget));
+
     let cache_ttl_secs = overrides
         .get("cache_ttl_secs")
         .and_then(|v| v.parse().ok())
@@ -233,6 +281,8 @@ pub fn resolve(
         base_url,
         usage_quota_url,
         api_timeout_ms,
+        effort,
+        thinking_budget,
         cache_ttl_secs,
         statusline_timeout_secs,
     })
@@ -245,6 +295,8 @@ pub fn default_config_toml() -> String {
          profile      = {:?}\n\
          model        = {:?}\n\
          small_model  = {:?}\n\
+         # effort = \"max\"  # low|medium|high|xhigh|max; unset = Claude Code default\n\
+         # thinking_budget = 32000  # tokens; forwarded as MAX_THINKING_TOKENS\n\
          \n\
          [statusline]\n\
          cache_ttl_secs = {}\n\
@@ -320,6 +372,16 @@ pub fn cfg_to_toml(cfg: &ConfigFile) -> Result<String> {
     } else {
         table.remove("api_timeout_ms");
     }
+    if let Some(v) = &cfg.effort {
+        table.insert("effort".into(), toml::Value::String(v.clone()));
+    } else {
+        table.remove("effort");
+    }
+    if let Some(v) = cfg.thinking_budget {
+        table.insert("thinking_budget".into(), toml::Value::Integer(v as i64));
+    } else {
+        table.remove("thinking_budget");
+    }
     match &cfg.statusline {
         Some(st) => {
             let mut st_t = toml::Table::new();
@@ -354,6 +416,8 @@ mod tests {
             base_url: None,
             usage_quota_url: None,
             api_timeout_ms: Some(111),
+            effort: None,
+            thinking_budget: None,
             statusline: Some(StatuslineFile {
                 cache_ttl_secs: Some(22),
                 timeout_secs: Some(33),
@@ -370,6 +434,8 @@ mod tests {
             "GLM_BASE_URL",
             "GLM_USAGE_QUOTA_URL",
             "GLM_API_TIMEOUT_MS",
+            "GLM_EFFORT",
+            "GLM_THINKING_BUDGET",
             "GLM_CACHE_TTL_SECS",
             "GLM_STATUSLINE_TIMEOUT_SECS",
             "BIGMODEL_USAGE_QUOTA_URL",
@@ -467,5 +533,107 @@ mod tests {
             parsed.statusline.as_ref().unwrap().cache_ttl_secs,
             Some(DEFAULT_CACHE_TTL_SECS)
         );
+        // The effort line is a comment: documented but unset by default.
+        assert_eq!(parsed.effort, None);
+    }
+
+    #[test]
+    fn effort_resolves_from_file_env_and_overrides() {
+        no_env(|| {
+            // unset everywhere -> None
+            let cfg = resolve(None, &BTreeMap::new()).unwrap();
+            assert_eq!(cfg.effort, None);
+            // file value
+            let mut f = file(None, None);
+            f.effort = Some("high".into());
+            let cfg = resolve(Some(&f), &BTreeMap::new()).unwrap();
+            assert_eq!(cfg.effort.as_deref(), Some("high"));
+            // env beats file, and is normalized
+            env::set_var("GLM_EFFORT", "  MAX ");
+            let cfg = resolve(Some(&f), &BTreeMap::new()).unwrap();
+            assert_eq!(cfg.effort.as_deref(), Some("max"));
+            // overrides beat env
+            let mut o = BTreeMap::new();
+            o.insert("effort".to_string(), "low".to_string());
+            let cfg = resolve(Some(&f), &o).unwrap();
+            assert_eq!(cfg.effort.as_deref(), Some("low"));
+        });
+    }
+
+    #[test]
+    fn thinking_budget_resolves_from_file_env_and_overrides() {
+        no_env(|| {
+            let cfg = resolve(None, &BTreeMap::new()).unwrap();
+            assert_eq!(cfg.thinking_budget, None);
+            let mut f = file(None, None);
+            f.thinking_budget = Some(32000);
+            let cfg = resolve(Some(&f), &BTreeMap::new()).unwrap();
+            assert_eq!(cfg.thinking_budget, Some(32000));
+            env::set_var("GLM_THINKING_BUDGET", "0");
+            let cfg = resolve(Some(&f), &BTreeMap::new()).unwrap();
+            assert_eq!(cfg.thinking_budget, Some(0));
+            let mut o = BTreeMap::new();
+            o.insert("thinking_budget".to_string(), "16384".to_string());
+            let cfg = resolve(Some(&f), &o).unwrap();
+            assert_eq!(cfg.thinking_budget, Some(16384));
+        });
+    }
+
+    #[test]
+    fn thinking_budget_survives_cfg_to_toml() {
+        // Seeded from the on-disk config; effort_survives_cfg_to_toml already
+        // covers XDG hermeticity, so only round-trip through the struct here.
+        let cfg = ConfigFile {
+            thinking_budget: Some(4096),
+            ..ConfigFile::default()
+        };
+        let body = cfg_to_toml(&cfg).unwrap();
+        assert!(body.contains("thinking_budget"), "{body}");
+        let parsed: ConfigFile = toml::from_str(&body).unwrap();
+        assert_eq!(parsed.thinking_budget, Some(4096));
+    }
+
+    #[test]
+    fn effort_rejects_unknown_values() {
+        no_env(|| {
+            assert_eq!(normalize_effort("xhigh").unwrap(), "xhigh");
+            assert_eq!(normalize_effort("Low").unwrap(), "low");
+            let err = normalize_effort("ultra").unwrap_err().to_string();
+            assert!(err.contains("low") && err.contains("max"), "{err}");
+            let mut f = file(None, None);
+            f.effort = Some("bogus".into());
+            let err = resolve(Some(&f), &BTreeMap::new()).unwrap_err().to_string();
+            assert!(err.contains("bogus"), "{err}");
+        });
+    }
+
+    #[test]
+    fn effort_survives_cfg_to_toml() {
+        // cfg_to_toml seeds from the on-disk config; point XDG at an empty
+        // temp dir so the test never touches the developer's real file.
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("glm-cfg-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: single-threaded vs other config tests via ENV_LOCK.
+        let old = env::var_os("XDG_CONFIG_HOME");
+        env::set_var("XDG_CONFIG_HOME", &dir);
+        let result = std::panic::catch_unwind(|| {
+            let cfg = ConfigFile {
+                effort: Some("xhigh".into()),
+                ..ConfigFile::default()
+            };
+            let body = cfg_to_toml(&cfg).unwrap();
+            let parsed: ConfigFile = toml::from_str(&body).unwrap();
+            assert_eq!(parsed.effort.as_deref(), Some("xhigh"));
+            // a None effort must not leave a stale key behind
+            let body = cfg_to_toml(&ConfigFile::default()).unwrap();
+            assert!(!body.contains("effort"), "{body}");
+        });
+        match old {
+            Some(v) => env::set_var("XDG_CONFIG_HOME", v),
+            None => env::remove_var("XDG_CONFIG_HOME"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(result.is_ok());
     }
 }

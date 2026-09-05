@@ -168,6 +168,35 @@ pub fn is_known_model(id: &str) -> bool {
     find_model(&catalog(), &api_model_id(id)).is_some()
 }
 
+/// Models whose thinking is always on and cannot be disabled (GLM-5.3
+/// generation, per docs.z.ai). Every side call through them pays thinking
+/// tokens, which makes them a poor ANTHROPIC_SMALL_FAST_MODEL choice.
+pub fn thinking_always_on(id: &str) -> bool {
+    matches!(api_model_id(id).as_str(), "glm-5.3" | "glm-5.3-flash")
+}
+
+/// Documented reasoning-effort levels (docs.z.ai): GLM-5.2 and newer accept
+/// `low|high|max` (default max); older GLM models have no effort parameter
+/// at all. None means "send no effort value" — the server default applies.
+pub fn effort_levels(id: &str) -> Option<&'static [&'static str]> {
+    let base = api_model_id(id);
+    let rest = base.strip_prefix("glm-")?;
+    // Leading [digits.dot]* is the version: 5.3, 5.1-highspeed -> 5.1,
+    // 5v-turbo -> 5, 4-flash-250414 -> 4.
+    let ver: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let mut parts = ver.split('.');
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor: u32 = parts.next().unwrap_or("0").parse().ok()?;
+    if (major, minor) >= (5, 2) {
+        Some(&["low", "high", "max"])
+    } else {
+        None
+    }
+}
+
 /// Resolve the profile, erroring when unknown and listing the valid ids.
 pub fn resolve_profile(id: &str) -> Result<Profile> {
     find_profile(id).ok_or_else(|| {
@@ -290,6 +319,32 @@ mod tests {
         let m = find_model(&c, "glm-4-flash-250414").unwrap();
         assert_eq!(m.max_output_tokens, 16_384);
         assert!(!m.reasoning);
+    }
+
+    #[test]
+    fn thinking_always_on_flags_5_3_generation() {
+        assert!(thinking_always_on("glm-5.3"));
+        assert!(thinking_always_on("glm-5.3-flash"));
+        assert!(!thinking_always_on("glm-4.7-flash"));
+        assert!(!thinking_always_on("glm-5.1"));
+        assert!(!thinking_always_on("glm-zzz"));
+    }
+
+    #[test]
+    fn effort_levels_follow_docs_availability() {
+        // GLM-5.2+: low/high/max
+        assert_eq!(effort_levels("glm-5.3"), Some(&["low", "high", "max"][..]));
+        assert_eq!(
+            effort_levels("glm-5.3-flash"),
+            Some(&["low", "high", "max"][..])
+        );
+        // older tiers: no effort parameter
+        assert_eq!(effort_levels("glm-5.1"), None);
+        assert_eq!(effort_levels("glm-5"), None);
+        assert_eq!(effort_levels("glm-5v-turbo"), None);
+        assert_eq!(effort_levels("glm-4.7"), None);
+        assert_eq!(effort_levels("glm-4-flash-250414"), None);
+        assert_eq!(effort_levels("codegeex-4"), None);
     }
 
     #[test]

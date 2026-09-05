@@ -222,15 +222,72 @@ pub fn run(ctx: &DoctorContext) -> Vec<Check> {
         ));
     }
     if crate::catalog::is_known_model(&ctx.small_model) {
-        checks.push(Check::pass(
-            "small_model",
-            &format!("{} is in the catalog", ctx.small_model),
-        ));
+        // glm-5.3 generation has thinking permanently on: fine as a main
+        // model, wasteful for the side calls Claude Code routes through
+        // ANTHROPIC_SMALL_FAST_MODEL.
+        if crate::catalog::thinking_always_on(&ctx.small_model) {
+            checks.push(Check::warn(
+                "small_model",
+                &format!(
+                    "{} has thinking always on; every side call pays thinking tokens",
+                    ctx.small_model
+                ),
+                "set small_model = \"glm-4.7-flash\" in config.toml",
+            ));
+        } else {
+            checks.push(Check::pass(
+                "small_model",
+                &format!("{} is in the catalog", ctx.small_model),
+            ));
+        }
     } else {
         checks.push(Check::warn(
             "small_model",
             &format!("{} is not in the bundled catalog", ctx.small_model),
             "update small_model in config.toml",
+        ));
+    }
+
+    // 5b. effort compatibility with the selected model (docs.z.ai: GLM-5.2+
+    // document low|high|max; other tiers have no effort parameter).
+    if let Some(effort) = &ctx.cfg.effort {
+        match crate::catalog::effort_levels(&ctx.model) {
+            Some(levels) if !levels.contains(&effort.as_str()) => {
+                checks.push(Check::warn(
+                    "effort",
+                    &format!(
+                        "effort {effort:?} is not documented for {} (documented: {})",
+                        ctx.model,
+                        levels.join("/")
+                    ),
+                    &format!("glm config set effort {}", levels.last().unwrap_or(&"max")),
+                ));
+            }
+            Some(_) => checks.push(Check::pass(
+                "effort",
+                &format!("{effort} is documented for {}", ctx.model),
+            )),
+            None => checks.push(Check::warn(
+                "effort",
+                &format!(
+                    "{ctx_model} has no documented effort levels; pinned effort {effort:?} will be ignored or clamped",
+                    ctx_model = ctx.model
+                ),
+                "remove effort from config.toml to use the model default",
+            )),
+        }
+    }
+
+    // 5c. thinking_budget = 0 disables thinking, which the glm-5.3
+    // generation cannot do (thinking.type only supports "enabled").
+    if ctx.cfg.thinking_budget == Some(0) && crate::catalog::thinking_always_on(&ctx.model) {
+        checks.push(Check::warn(
+            "thinking_budget",
+            &format!(
+                "budget 0 disables thinking, but {} cannot switch thinking off",
+                ctx.model
+            ),
+            "raise thinking_budget or remove it from config.toml",
         ));
     }
 

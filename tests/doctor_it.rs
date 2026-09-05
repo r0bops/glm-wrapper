@@ -89,3 +89,87 @@ fn doctor_reports_unknown_config_keys() {
     assert!(stdout.contains("FAIL  config.toml"), "stdout: {stdout}");
     assert!(stdout.contains("bogus_key"), "stdout: {stdout}");
 }
+
+#[test]
+fn doctor_warns_when_small_model_thinks_always() {
+    let srv = StubServer::start(vec![(200, r#"{"data":[{"id":"glm-5.3"}]}"#.to_string())]);
+    let xdg = scratch_xdg("doctor-small-thinking");
+    cfg_with_base(&xdg, &format!("http://{}", srv.addr), "sk-abc");
+
+    let (stdout, _stderr, _code) = run_glm(&["doctor"], &xdg, &[]);
+    assert!(stdout.contains("WARN  small_model"), "stdout: {stdout}");
+    assert!(stdout.contains("thinking always on"), "stdout: {stdout}");
+    assert!(stdout.contains("glm-4.7-flash"), "stdout: {stdout}");
+}
+
+#[test]
+fn doctor_checks_effort_against_model_docs() {
+    let srv = StubServer::start(vec![(200, r#"{"data":[{"id":"glm-5.3"}]}"#.to_string())]);
+    let base = format!("http://{}", srv.addr);
+
+    // documented value: PASS
+    let xdg = scratch_xdg("doctor-effort-ok");
+    std::fs::create_dir_all(xdg.join("glm")).unwrap();
+    std::fs::write(
+        xdg.join("glm").join("config.toml"),
+        format!(
+            "profile = \"zai\"\nmodel = \"glm-5.3\"\neffort = \"max\"\nbase_url = \"{base}\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(xdg.join("glm").join("key"), "sk-e\n").unwrap();
+    let (stdout, _stderr, _code) = run_glm(&["doctor"], &xdg, &[]);
+    assert!(stdout.contains("PASS  effort"), "stdout: {stdout}");
+
+    // undocumented value for a 5.2+ model: WARN with the documented set
+    let xdg = scratch_xdg("doctor-effort-bad");
+    std::fs::create_dir_all(xdg.join("glm")).unwrap();
+    std::fs::write(
+        xdg.join("glm").join("config.toml"),
+        format!(
+            "profile = \"zai\"\nmodel = \"glm-5.3\"\neffort = \"medium\"\nbase_url = \"{base}\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(xdg.join("glm").join("key"), "sk-e\n").unwrap();
+    let (stdout, _stderr, _code) = run_glm(&["doctor"], &xdg, &[]);
+    assert!(stdout.contains("WARN  effort"), "stdout: {stdout}");
+    assert!(stdout.contains("low/high/max"), "stdout: {stdout}");
+
+    // pre-5.2 model: no effort parameter at all
+    let xdg = scratch_xdg("doctor-effort-noparam");
+    std::fs::create_dir_all(xdg.join("glm")).unwrap();
+    std::fs::write(
+        xdg.join("glm").join("config.toml"),
+        format!(
+            "profile = \"zai\"\nmodel = \"glm-4.6\"\neffort = \"high\"\nbase_url = \"{base}\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(xdg.join("glm").join("key"), "sk-e\n").unwrap();
+    let (stdout, _stderr, _code) = run_glm(&["doctor"], &xdg, &[]);
+    assert!(stdout.contains("WARN  effort"), "stdout: {stdout}");
+}
+
+#[test]
+fn doctor_warns_when_zero_budget_on_thinking_always_model() {
+    let srv = StubServer::start(vec![(200, r#"{"data":[{"id":"glm-5.3"}]}"#.to_string())]);
+    let xdg = scratch_xdg("doctor-budget-zero");
+    std::fs::create_dir_all(xdg.join("glm")).unwrap();
+    std::fs::write(
+        xdg.join("glm").join("config.toml"),
+        format!(
+            "profile = \"zai\"\nmodel = \"glm-5.3\"\nthinking_budget = 0\nbase_url = \"{}\"\n",
+            srv.addr
+        ),
+    )
+    .unwrap();
+    std::fs::write(xdg.join("glm").join("key"), "sk-b\n").unwrap();
+
+    let (stdout, _stderr, _code) = run_glm(&["doctor"], &xdg, &[]);
+    assert!(stdout.contains("WARN  thinking_budget"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("cannot switch thinking off"),
+        "stdout: {stdout}"
+    );
+}
