@@ -11,7 +11,13 @@ pub fn atomic_write(path: &Path, body: &str) -> anyhow::Result<()> {
         path.file_name().and_then(|n| n.to_str()).unwrap_or("out"),
         std::process::id()
     ));
-    std::fs::write(&tmp, body)?;
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(body.as_bytes())?;
+        // Without this a crash right after the rename can leave an empty file.
+        f.sync_all()?;
+    }
     std::fs::rename(&tmp, path)?;
     Ok(())
 }

@@ -66,9 +66,18 @@ pub fn claude_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| PathBuf::from(".claude"))
 }
 
-/// Directory of personal custom slash commands (`/name` -> `<name>.md`).
-pub fn claude_commands_dir() -> std::path::PathBuf {
+/// Claude Code's global personal commands. Older glm versions installed the
+/// commands here (leaking them into every claude session); only used to
+/// clean those up.
+pub fn legacy_commands_dir() -> std::path::PathBuf {
     claude_dir().join("commands")
+}
+
+/// The glm session plugin (`.claude-plugin/plugin.json` + `commands/`),
+/// passed to claude via `--plugin-dir` so its commands exist only in glm
+/// sessions and never leak into plain `claude` runs.
+pub fn plugin_dir() -> std::path::PathBuf {
+    config_dir().join("plugin")
 }
 
 /// Canonical path used for the statusline hook command and the env key.

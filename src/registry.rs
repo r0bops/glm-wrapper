@@ -140,6 +140,27 @@ pub fn resolve_target<'e>(
     }
 }
 
+/// Entries whose processes are really ours. A bare signal-0 probe is not
+/// enough: after a reboot or a crashed relay the pids get recycled, and
+/// `glm kill` would SIGTERM whatever now owns them.
+pub fn load_live() -> Vec<SessionEntry> {
+    load(|_| true).into_iter().filter(session_alive).collect()
+}
+
+pub fn session_alive(e: &SessionEntry) -> bool {
+    (pid_alive(e.pid) && cmdline_mentions(e.pid, "glm"))
+        || (pid_alive(e.child_pid) && cmdline_mentions(e.child_pid, "claude"))
+}
+
+/// Whether /proc says `pid` runs a `needle` binary. Without /proc (or once
+/// the process is gone mid-check) the signal probe alone has to do.
+fn cmdline_mentions(pid: u32, needle: &str) -> bool {
+    match std::fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(raw) => String::from_utf8_lossy(&raw).contains(needle),
+        Err(_) => true,
+    }
+}
+
 /// Remove the entry for `pid` (best effort; used on clean exit).
 pub fn remove(pid: u32) {
     let path = crate::paths::sessions_file();

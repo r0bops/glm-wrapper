@@ -45,6 +45,24 @@ fn setup(name: &str) -> Env {
     Env { xdg }
 }
 
+/// A stub claude that sets its terminal raw first (as Claude Code does), so
+/// forwarded Ctrl-C bytes are plain input instead of ISIG signals.
+fn stub_claude_raw(bin_dir: &Path) {
+    let bin = bin_dir.join("claude");
+    let mut f = std::fs::File::create(&bin).unwrap();
+    write!(
+        f,
+        "#!/bin/sh\n\
+         stty raw -echo\n\
+         while IFS= read -r line; do printf 'got:%s\\n' \"$line\"; done\n\
+         sleep 30\n"
+    )
+    .unwrap();
+    drop(f);
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 /// Spawn glm on a fresh pty; returns (master fd, glm pid).
 fn spawn_glm(env: &Env, args: &[&str]) -> (RawFd, libc::pid_t) {
     unsafe {
@@ -207,12 +225,19 @@ fn attach_and_kill_flow() {
 #[test]
 fn ctrl_c_backgrounds_instead_of_killing() {
     let env = setup("multi-ctrlc");
+    // The default stub runs on a cooked pty: a forwarded Ctrl-C would raise
+    // SIGINT and kill it. Claude Code sets raw mode and takes ^C as a byte,
+    // so emulate that before driving the double press.
+    stub_claude_raw(&env.xdg.join("bin"));
     let (master, glm_pid) = spawn_glm(&env, &["--resume", "x"]);
     std::thread::sleep(Duration::from_millis(800));
 
-    // The user presses Ctrl-C: under keep-alive this must hand the terminal
-    // back and keep the agent running.
+    // The user presses Ctrl-C twice (Claude Code's exit gesture): under
+    // keep-alive the double press must hand the terminal back and keep the
+    // agent running. A single press is only forwarded to the agent.
     unsafe {
+        libc::write(master, b"\x03".as_ptr().cast(), 1);
+        std::thread::sleep(Duration::from_millis(150));
         libc::write(master, b"\x03".as_ptr().cast(), 1);
     }
     let out = drain_fd(master, 3);
@@ -253,6 +278,9 @@ fn ctrl_c_backgrounds_instead_of_killing() {
     greet[0..2].copy_from_slice(&24u16.to_le_bytes());
     greet[2..4].copy_from_slice(&80u16.to_le_bytes());
     client.write_all(&greet).unwrap();
+    // Complete the stub's pending line first: it still holds the forwarded
+    // first Ctrl-C byte, and "pong\n" would otherwise land in that line.
+    client.write_all(b"\n").unwrap();
     client.write_all(b"pong\n").unwrap();
     let reply = drain_fd(client.as_raw_fd(), 5);
     assert!(

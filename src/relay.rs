@@ -18,6 +18,8 @@
 
 /// The heading claude emits before the hardcoded program name.
 const HEADING: &[u8] = b"Resume this session with:";
+
+use std::time::{Duration, Instant};
 /// Longest sequence we can still be mid-match on: heading + EOL + "claude".
 const HOLD: usize = HEADING.len() + 2 + b"claude".len() - 1;
 
@@ -171,6 +173,27 @@ pub fn keep_alive_enabled() -> bool {
     !flag_env("GLM_KEEP_ALIVE")
 }
 
+/// Double-press window for Ctrl-C backgrounding, mirroring Claude Code's
+/// exit gesture: the first press is forwarded so the agent can interrupt
+/// whatever it is doing; a second press within this window backgrounds the
+/// session (a slower second press reaches the agent, which exits it).
+const CTRL_C_WINDOW: Duration = Duration::from_secs(2);
+
+/// Decide whether a read containing Ctrl-C should background the session:
+/// true on the second press inside the window (or two presses in one read);
+/// otherwise the press is recorded and false is returned so the bytes are
+/// forwarded to the agent.
+fn ctrl_c_backgrounds(last: &mut Option<Instant>, chunk: &[u8]) -> bool {
+    let presses = chunk.iter().filter(|&&b| b == 0x03).count();
+    let now = Instant::now();
+    let doubled = presses >= 2
+        || last
+            .map(|t| now.duration_since(t) <= CTRL_C_WINDOW)
+            .unwrap_or(false);
+    *last = Some(now);
+    doubled
+}
+
 fn flag_env(name: &str) -> bool {
     match std::env::var(name) {
         Ok(v) => matches!(
@@ -192,13 +215,14 @@ pub fn is_interactive(args: &[String]) -> bool {
 
 #[cfg(unix)]
 mod imp {
-    use super::{keep_alive_enabled, HintRewriter};
+    use super::{ctrl_c_backgrounds, keep_alive_enabled, HintRewriter};
     use crate::registry::{self, SessionEntry};
     use anyhow::{bail, Result};
     use std::ffi::CString;
     use std::io::{Read, Write};
     use std::os::unix::io::AsRawFd;
     use std::os::unix::net::{UnixListener, UnixStream};
+    use std::time::Instant;
 
     /// Signals the relay forwards to the child (which lives in its own
     /// session, so terminal teardown signals never reach it on their own).
@@ -398,6 +422,8 @@ mod imp {
         let mut client_greeted = false;
         let mut greet_buf: Vec<u8> = Vec::new();
         let mut backgrounded = false;
+        // Time of the last read containing Ctrl-C (double-press detection).
+        let mut last_ctrl_c: Option<Instant> = None;
         // Set by terminal loss (SIGHUP, EOF/EIO) or Ctrl-C under keep-alive.
         let mut bg_requested = false;
         // Set once Ctrl-C (or terminal loss) backgrounded the session: the
@@ -483,8 +509,13 @@ mod imp {
                     if keep_alive {
                         bg_requested = true;
                     }
-                } else if keep_alive && buf[..n as usize].contains(&0x03) {
-                    // Ctrl-C: background instead of killing the agent.
+                } else if keep_alive
+                    && buf[..n as usize].contains(&0x03)
+                    && ctrl_c_backgrounds(&mut last_ctrl_c, &buf[..n as usize])
+                {
+                    // Double Ctrl-C: background instead of killing the agent.
+                    // A single press was forwarded above, so the agent has
+                    // already seen it and interrupted / shown its own hint.
                     bg_requested = true;
                     terminal_was_alive = true;
                 } else {
@@ -503,9 +534,15 @@ mod imp {
                 // mouse-event bytes flushed before the shell reads them.
                 let _ = write_all_fd(libc::STDOUT_FILENO, TUI_MODES_DISABLE);
                 let _ = libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH);
-                let msg = format!(
-                    "glm: session backgrounded (pid {glm_pid}) - `glm attach` to resume, `glm kill` to stop\n"
-                );
+                let msg = if listener.is_some() {
+                    format!(
+                        "glm: session backgrounded (pid {glm_pid}) - `glm attach` to resume, `glm kill` to stop\n"
+                    )
+                } else {
+                    format!(
+                        "glm: session backgrounded (pid {glm_pid}) - attach socket unavailable, `glm kill` to stop\n"
+                    )
+                };
                 let _ = write_all_fd(libc::STDOUT_FILENO, msg.as_bytes());
                 mark_backgrounded(glm_pid);
 
@@ -667,16 +704,17 @@ mod imp {
         // Reap the child; if it is still alive (e.g. our stdout died), give
         // it a moment to exit, then take it down.
         for attempt in 0.. {
-            if libc::waitpid(
+            let r = libc::waitpid(
                 pid,
                 &mut status,
                 if attempt == 0 { 0 } else { libc::WNOHANG },
-            ) >= 0
-            {
+            );
+            if r == pid {
                 reaped = true;
                 break;
             }
-            if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            // 0 = still running (WNOHANG); anything but EINTR = give up.
+            if r == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
                 break;
             }
         }
@@ -877,7 +915,7 @@ mod imp {
     }
 
     unsafe fn attach_inner(target: Option<u32>) -> Result<()> {
-        let entries = registry::load(|_| true);
+        let entries = registry::load_live();
         let candidate = registry::pick_attach_target(&entries, target);
         let Some(entry) = candidate else {
             eprintln!("glm: no backgrounded session to attach to; see `glm sessions`");
@@ -1014,6 +1052,22 @@ pub fn attach(_target: Option<u32>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn ctrl_c_needs_double_press() {
+        let mut last = None;
+        // First press: forwarded, not a background trigger.
+        assert!(!ctrl_c_backgrounds(&mut last, b"\x03"));
+        // Second press inside the window: backgrounds.
+        assert!(ctrl_c_backgrounds(&mut last, b"\x03"));
+        // Two presses in one read (key held / repeat): backgrounds.
+        let mut last = None;
+        assert!(ctrl_c_backgrounds(&mut last, b"a\x03b\x03"));
+        // A press long after the previous one is treated as a fresh first.
+        let mut last = Some(Instant::now() - CTRL_C_WINDOW - CTRL_C_WINDOW);
+        assert!(!ctrl_c_backgrounds(&mut last, b"\x03"));
+    }
 
     fn emit(r: &mut HintRewriter, chunks: &[&[u8]]) -> String {
         let mut out = Vec::new();

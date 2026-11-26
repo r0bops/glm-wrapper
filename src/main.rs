@@ -260,21 +260,27 @@ fn cmd_claude(args: &[String]) -> Result<i32> {
     // 2. settings.json (regenerated on every run)
     let settings_path = paths::settings_file();
     run::write_settings(&paths::current_exe(), &cfg, &settings_path)?;
-    // 3. the glm personal slash commands (idempotent; foreign files with the
-    // same names are never touched)
-    match run::install_personal_commands(&paths::claude_commands_dir()) {
-        Ok(actions) => {
-            for (name, action) in &actions {
-                if action.starts_with("kept") {
-                    eprintln!("glm: note: your own /{name} command was left untouched");
-                }
-            }
-        }
-        Err(e) => eprintln!("glm: warning: could not install slash commands: {e:#}"),
+    // 3. the glm session plugin (its slash commands are loaded per session
+    // via --plugin-dir, so plain `claude` never sees them)
+    let plugin_dir = paths::plugin_dir();
+    match run::remove_legacy_commands(&paths::legacy_commands_dir()) {
+        Ok(removed) if !removed.is_empty() => eprintln!(
+            "glm: moved /{} into the glm plugin (now /glm:<name>, glm sessions only)",
+            removed.join(", /")
+        ),
+        Ok(_) => {}
+        Err(e) => eprintln!("glm: warning: could not remove old global commands: {e:#}"),
     }
+    let plugin_ok = match run::install_plugin(&plugin_dir) {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("glm: warning: could not install the glm plugin: {e:#}");
+            false
+        }
+    };
     // 3b. surface backgrounded sessions so they are not forgotten
     if relay::is_interactive(args) {
-        let bg: Vec<_> = registry::load(registry::pid_alive)
+        let bg: Vec<_> = registry::load_live()
             .into_iter()
             .filter(|e| e.backgrounded)
             .collect();
@@ -289,6 +295,10 @@ fn cmd_claude(args: &[String]) -> Result<i32> {
     if !user_passed_settings(args) {
         final_args.push("--settings".to_string());
         final_args.push(settings_path.display().to_string());
+    }
+    if plugin_ok {
+        final_args.push("--plugin-dir".to_string());
+        final_args.push(plugin_dir.display().to_string());
     }
     // 5. warn once when the model is not in the catalog
     if !catalog::is_known_model(&cfg.model) {
@@ -651,6 +661,7 @@ fn cmd_doctor() -> Result<i32> {
     let mut ctx = doctor::DoctorContext {
         config_file: &paths::config_file(),
         settings_path: &paths::settings_file(),
+        plugin_dir: &paths::plugin_dir(),
         resolved_key: key.as_ref().ok().map(|k| (k.value.clone(), k.source)),
         cfg: &cfg_file,
         base_url: resolved.base_url.clone(),
@@ -676,14 +687,14 @@ fn cmd_doctor() -> Result<i32> {
 /// Resolve an optional target against the registry and attach. Exits with
 /// the agent's status; Err only means setup failed.
 fn cmd_attach(target: Option<&str>) -> Result<i32> {
-    let entries = registry::load(registry::pid_alive);
+    let entries = registry::load_live();
     let pid = registry::resolve_target(&entries, target.unwrap_or(""))?.map(|e| e.pid);
     relay::attach(pid)?;
     Ok(1)
 }
 
 fn cmd_sessions() -> Result<i32> {
-    let entries = registry::load(registry::pid_alive);
+    let entries = registry::load_live();
     if entries.is_empty() {
         println!("no glm sessions");
         return Ok(0);
@@ -730,10 +741,10 @@ fn fmt_relative(ms: i64) -> String {
 /// Terminate tracked sessions. Default: all of them; a target (exact pid
 /// or unique 3+ char prefix of pid/session-id) kills one.
 fn cmd_kill(target: Option<&str>) -> Result<i32> {
-    let all = registry::load(registry::pid_alive);
-    let targets: Vec<_> = match target {
+    let all = registry::load_live();
+    let targets: Vec<_> = match target.map(str::trim).filter(|t| !t.is_empty()) {
         // resolve_target errors on ambiguity/non-match with a candidate list
-        Some(t) => vec![registry::resolve_target(&all, t)?.expect("non-empty target resolves")],
+        Some(t) => registry::resolve_target(&all, t)?.into_iter().collect(),
         None => all.iter().collect(),
     };
     if targets.is_empty() {
@@ -741,11 +752,11 @@ fn cmd_kill(target: Option<&str>) -> Result<i32> {
         return Ok(0);
     }
     for e in targets {
-        // The child is a session leader: SIGTERM to it takes claude (and
-        // any agents it spawned) down; the relay then exits and cleans up
-        // its own registry row.
+        // The child is a session leader (pgid == pid): SIGTERM to its group
+        // takes claude and any agents it spawned down; the relay then exits
+        // and cleans up its own registry row.
         unsafe {
-            libc::kill(e.child_pid as i32, libc::SIGTERM);
+            libc::killpg(e.child_pid as i32, libc::SIGTERM);
         }
         println!("killed session {} ({})", e.pid, e.cwd);
     }

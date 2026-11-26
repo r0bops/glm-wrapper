@@ -78,6 +78,7 @@ impl AuthMode {
 pub struct DoctorContext<'a> {
     pub config_file: &'a Path,
     pub settings_path: &'a Path,
+    pub plugin_dir: &'a Path,
     pub resolved_key: Option<(String, KeySource)>,
     pub cfg: &'a ConfigFile,
     pub base_url: String,
@@ -338,6 +339,23 @@ pub fn run(ctx: &DoctorContext) -> Vec<Check> {
             &format!("cannot write {}", ctx.settings_path.display()),
             "check permissions on ~/.config/glm",
         ));
+    }
+
+    // 8. the session plugin materializes (same install path as `glm`)
+    match crate::run::install_plugin(ctx.plugin_dir) {
+        Ok(actions) => checks.push(Check::pass(
+            "plugin",
+            &format!(
+                "{} commands at {} (loaded per session via --plugin-dir)",
+                actions.len(),
+                ctx.plugin_dir.display()
+            ),
+        )),
+        Err(e) => checks.push(Check::fail(
+            "plugin",
+            &format!("cannot write {}: {e:#}", ctx.plugin_dir.display()),
+            "check permissions on ~/.config/glm",
+        )),
     }
 
     checks

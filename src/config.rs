@@ -185,7 +185,8 @@ pub fn resolve(
         .or_else(|| file.and_then(|f| f.profile.clone()))
         .unwrap_or_else(|| crate::catalog::DEFAULT_PROFILE.to_string());
     let profile = resolve_profile(&profile_id)?;
-    let profile_source = if overrides.contains_key("profile") || env::var("GLM_PROFILE").is_ok() {
+    let profile_source = if overrides.contains_key("profile") || env_any(&["GLM_PROFILE"]).is_some()
+    {
         Source::Env
     } else if file.and_then(|f| f.profile.as_ref()).is_some() {
         Source::File

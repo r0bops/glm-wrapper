@@ -61,26 +61,29 @@ pub struct EnvPlan {
 /// Compute the environment mutations for running claude with the resolved
 /// configuration. Pure: no process state, easy to test.
 pub fn env_plan(cfg: &ResolvedConfig, key: &str) -> EnvPlan {
+    // The API rejects ids carrying the `[1m]` suffix (error 1214 "modelCode:
+    // does not exist"), and Claude Code forwards ANTHROPIC_MODEL verbatim to
+    // custom base URLs — so the wrapper must strip the suffix itself. The 1M
+    // window is still requested via CLAUDE_CODE_AUTO_COMPACT_WINDOW below.
+    let api_model = crate::catalog::api_model_id(&cfg.model);
+    let api_small_model = crate::catalog::api_model_id(&cfg.small_model);
     let mut set = vec![
         ("ANTHROPIC_AUTH_TOKEN".to_string(), key.to_string()),
         ("ANTHROPIC_BASE_URL".to_string(), cfg.base_url.clone()),
-        ("ANTHROPIC_MODEL".to_string(), cfg.model.clone()),
+        ("ANTHROPIC_MODEL".to_string(), api_model.clone()),
         (
             "ANTHROPIC_DEFAULT_OPUS_MODEL".to_string(),
-            cfg.model.clone(),
+            api_model.clone(),
         ),
         (
             "ANTHROPIC_DEFAULT_SONNET_MODEL".to_string(),
-            cfg.model.clone(),
+            api_model.clone(),
         ),
         (
             "ANTHROPIC_SMALL_FAST_MODEL".to_string(),
-            cfg.small_model.clone(),
+            api_small_model.clone(),
         ),
-        (
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL".to_string(),
-            cfg.small_model.clone(),
-        ),
+        ("ANTHROPIC_DEFAULT_HAIKU_MODEL".to_string(), api_small_model),
         ("API_TIMEOUT_MS".to_string(), cfg.api_timeout_ms.to_string()),
     ];
     let spec = crate::catalog::parse_model_spec(&cfg.model);
@@ -95,6 +98,13 @@ pub fn env_plan(cfg: &ResolvedConfig, key: &str) -> EnvPlan {
     if spec.million {
         set.push((
             "CLAUDE_CODE_AUTO_COMPACT_WINDOW".to_string(),
+            "1000000".to_string(),
+        ));
+        // Claude Code assumes 200k for models outside its built-in catalog;
+        // this is how it learns the [1m] window without the suffix in
+        // ANTHROPIC_MODEL (which the API would reject with error 1214).
+        set.push((
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS".to_string(),
             "1000000".to_string(),
         ));
     }
@@ -201,8 +211,8 @@ fn command_body(name: &str) -> String {
             "approaching a limit. If the command failed, say the quota API is\n",
             "unreachable and suggest running `glm doctor` outside the session.\n",
         ),
-        // Shadows the builtin /usage (Anthropic subscription limits) with the
-        // GLM quota: same data as /quota, under the muscle-memory name.
+        // Same data as /quota under the muscle-memory name (`/glm:usage`);
+        // the builtin /usage (Anthropic subscription limits) stays untouched.
         "usage" => concat!(
             "---\n",
             "description: Show current GLM plan quota and usage\n",
@@ -323,7 +333,6 @@ pub fn personal_commands() -> [PersonalCommand; 7] {
             name: "quota",
             body: command_body("quota"),
         },
-        // Shadows the builtin /usage so the muscle-memory name shows GLM data.
         PersonalCommand {
             name: "usage",
             body: command_body("usage"),
@@ -347,9 +356,47 @@ pub fn personal_commands() -> [PersonalCommand; 7] {
     ]
 }
 
-/// Install the personal slash commands into `dir`. Idempotent: updates
-/// files that carry our marker, never touches a foreign file. Returns
-/// (name, action) per command.
+/// Materialize the glm plugin at `root`: the manifest plus the commands
+/// under `root/commands/`. Returns (name, action) per command.
+pub fn install_plugin(root: &Path) -> Result<Vec<(&'static str, &'static str)>> {
+    let manifest_dir = root.join(".claude-plugin");
+    std::fs::create_dir_all(&manifest_dir)
+        .with_context(|| format!("create {}", manifest_dir.display()))?;
+    let manifest = serde_json::json!({
+        "name": "glm",
+        "version": env!("CARGO_PKG_VERSION"),
+        "description": "GLM wrapper session commands (quota, models, workflows)",
+    });
+    let manifest_path = manifest_dir.join("plugin.json");
+    let body = serde_json::to_string_pretty(&manifest)? + "\n";
+    if std::fs::read_to_string(&manifest_path).ok().as_deref() != Some(&body) {
+        crate::util::atomic_write(&manifest_path, &body)
+            .with_context(|| format!("write {}", manifest_path.display()))?;
+    }
+    install_personal_commands(&root.join("commands"))
+}
+
+/// Delete commands an older glm installed globally into `dir`. Only files
+/// carrying our marker go; anything else is left alone. Returns the names
+/// removed.
+pub fn remove_legacy_commands(dir: &Path) -> Result<Vec<&'static str>> {
+    let mut removed = Vec::new();
+    for cmd in personal_commands() {
+        let path = dir.join(format!("{}.md", cmd.name));
+        let Ok(existing) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if existing.contains(&marker(cmd.name)) {
+            std::fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+            removed.push(cmd.name);
+        }
+    }
+    Ok(removed)
+}
+
+/// Install the slash commands into `dir`. Idempotent: updates files that
+/// carry our marker, never touches a foreign file. Returns (name, action)
+/// per command.
 pub fn install_personal_commands(dir: &Path) -> Result<Vec<(&'static str, &'static str)>> {
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     let mut out = Vec::new();
@@ -392,14 +439,11 @@ fn fmt_tokens(n: u64) -> String {
     }
 }
 
-/// Picker row id: 1M-window models carry the `[1m]` suffix so Claude Code
-/// engages the 1M window and auto-compact, matching the configured default.
-fn picker_row_id(base_id: &str, context_window: u64) -> String {
-    if context_window >= 1_000_000 {
-        format!("{base_id}[1m]")
-    } else {
-        base_id.to_string()
-    }
+/// Picker row id: the bare catalog id. The `[1m]` suffix convention is not
+/// stripped by Claude Code for custom base URLs (the API rejects suffixed ids
+/// with error 1214), so rows never carry it.
+fn picker_row_id(base_id: &str, _context_window: u64) -> String {
+    base_id.to_string()
 }
 
 /// One /model picker row per model in the active profile's bundled catalog.
@@ -413,7 +457,7 @@ fn picker_options(cfg: &ResolvedConfig) -> Vec<serde_json::Value> {
     let Some(provider) = provider else {
         return Vec::new();
     };
-    let default_display = crate::catalog::display_model_id(&cfg.model);
+    let default_display = crate::catalog::api_model_id(&cfg.model);
     provider
         .models
         .iter()
@@ -573,7 +617,7 @@ mod tests {
                 .map(|(_, v)| v.clone())
         };
         assert_eq!(get("ANTHROPIC_AUTH_TOKEN").as_deref(), Some("sk-test"));
-        assert_eq!(get("ANTHROPIC_MODEL").as_deref(), Some("glm-5.3[1m]"));
+        assert_eq!(get("ANTHROPIC_MODEL").as_deref(), Some("glm-5.3"));
         assert_eq!(
             get("CLAUDE_CODE_AUTO_COMPACT_WINDOW").as_deref(),
             Some("1000000")
@@ -705,11 +749,15 @@ mod tests {
             assert!(!row["description"].as_str().unwrap().is_empty());
         }
         let ids: Vec<&str> = rows.iter().map(|r| r["model"].as_str().unwrap()).collect();
-        // 1M-native models carry the [1m] suffix; smaller ones stay bare.
-        assert!(ids.contains(&"glm-5.3[1m]"), "{ids:?}");
+        // Rows never carry the [1m] suffix: the API rejects suffixed ids.
+        assert!(ids.contains(&"glm-5.3"), "{ids:?}");
         assert!(ids.contains(&"glm-4.6"), "{ids:?}");
+        assert!(
+            ids.iter().all(|id| !id.ends_with("[1m]")),
+            "picker row carries [1m]: {ids:?}"
+        );
         // The configured default row is annotated.
-        let default_row = rows.iter().find(|r| r["model"] == "glm-5.3[1m]").unwrap()["description"]
+        let default_row = rows.iter().find(|r| r["model"] == "glm-5.3").unwrap()["description"]
             .as_str()
             .unwrap();
         assert!(default_row.contains("configured default"), "{default_row}");
@@ -778,6 +826,55 @@ mod tests {
             let body = std::fs::read_to_string(dir.join(format!("{}.md", cmd.name))).unwrap();
             assert_eq!(body, cmd.body);
         }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn install_plugin_writes_manifest_and_commands() {
+        let root = std::env::temp_dir().join(format!("glm-plugin-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+
+        let actions = install_plugin(&root).expect("install");
+        assert!(actions.iter().all(|(_, a)| *a == "created"));
+        let manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join(".claude-plugin/plugin.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["name"], "glm");
+        assert!(root.join("commands/quota.md").exists());
+
+        let actions = install_plugin(&root).expect("reinstall");
+        assert!(actions.iter().all(|(_, a)| *a == "unchanged"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn legacy_commands_only_marked_files_removed() {
+        let dir = std::env::temp_dir().join(format!("glm-legacy-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        install_personal_commands(&dir).expect("install");
+        std::fs::write(dir.join("quota.md"), "# my own quota command\n").unwrap();
+        std::fs::write(dir.join("deploy.md"), "# unrelated\n").unwrap();
+
+        let mut removed = remove_legacy_commands(&dir).expect("cleanup");
+        removed.sort();
+        assert_eq!(
+            removed,
+            vec![
+                "glm-models",
+                "goals",
+                "kill",
+                "research",
+                "usage",
+                "workflow"
+            ]
+        );
+        assert!(dir.join("quota.md").exists());
+        assert!(dir.join("deploy.md").exists());
+        assert!(!dir.join("usage.md").exists());
+        assert!(remove_legacy_commands(&dir).unwrap().is_empty());
 
         std::fs::remove_dir_all(&dir).ok();
     }
