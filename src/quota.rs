@@ -229,11 +229,18 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Read the cache if younger than ttl; corrupt or stale returns None.
-pub fn load_cache(path: &Path, ttl: Duration) -> Option<QuotaCache> {
+/// Read the cache for `url` regardless of age; corrupt or another endpoint
+/// returns None.
+fn read_cache(path: &Path, url: &str) -> Option<QuotaCache> {
     let raw = std::fs::read_to_string(path).ok()?;
     let cache: QuotaCache = serde_json::from_str(&raw).ok()?;
-    cache.is_fresh(ttl, now_ms()).then_some(cache)
+    (cache.url == url).then_some(cache)
+}
+
+/// Read the cache if younger than ttl; corrupt, stale, or for another
+/// endpoint returns None.
+pub fn load_cache(path: &Path, url: &str, ttl: Duration) -> Option<QuotaCache> {
+    read_cache(path, url).filter(|c| c.is_fresh(ttl, now_ms()))
 }
 
 /// Atomically rewrite the cache.
@@ -250,17 +257,26 @@ pub fn quota_for_statusline(
     cache_ttl: Duration,
     fetch_timeout: Duration,
 ) -> Result<(QuotaEnvelope, bool)> {
-    if let Some(cache) = load_cache(cache_file, cache_ttl) {
+    if let Some(cache) = load_cache(cache_file, url, cache_ttl) {
         return Ok((cache.envelope, true));
     }
-    let envelope = fetch_quota(url, key, fetch_timeout)?;
+    let (envelope, from_cache, result) = match fetch_quota(url, key, fetch_timeout) {
+        Ok(envelope) => (envelope, false, Ok(())),
+        // Offline / bad key: keep showing the last good numbers, and
+        // re-stamp them so the statusline is not blocked for the full
+        // fetch timeout on every render until the endpoint is back.
+        Err(e) => match read_cache(cache_file, url) {
+            Some(stale) => (stale.envelope, true, Ok(())),
+            None => (QuotaEnvelope::default(), false, Err(e)),
+        },
+    };
     let cache = QuotaCache {
         fetched_at_ms: now_ms(),
         url: url.to_string(),
         envelope: envelope.clone(),
     };
     let _ = store_cache(cache_file, &cache); // cache write failures are non-fatal
-    Ok((envelope, false))
+    result.map(|()| (envelope, from_cache))
 }
 
 pub fn cache_path() -> PathBuf {
@@ -378,6 +394,36 @@ mod tests {
         };
         assert!(cache.is_fresh(Duration::from_secs(90), 1_000_000 + 89_000));
         assert!(!cache.is_fresh(Duration::from_secs(90), 1_000_000 + 91_000));
+    }
+
+    #[test]
+    fn fetch_failure_serves_stale_cache_and_rate_limits_retries() {
+        let dir = std::env::temp_dir().join(format!("glm-quota-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let file = dir.join("cache.json");
+        let url = "http://127.0.0.1:1/unreachable";
+        let ttl = Duration::from_secs(90);
+        let timeout = Duration::from_millis(500);
+
+        // no cache at all: the error surfaces, but a placeholder is stamped
+        // so the next render does not block on the network again
+        assert!(quota_for_statusline(&file, url, "k", ttl, timeout).is_err());
+        assert!(load_cache(&file, url, ttl).is_some());
+
+        // a stale cache for this url is served instead of the error
+        let mut stale = read_cache(&file, url).unwrap();
+        stale.fetched_at_ms = 0;
+        stale.envelope = parse_envelope(r#"[{"type":"TIME_LIMIT","percentage":42}]"#).unwrap();
+        store_cache(&file, &stale).unwrap();
+        let (env, from_cache) = quota_for_statusline(&file, url, "k", ttl, timeout).unwrap();
+        assert!(from_cache);
+        assert_eq!(env.data.unwrap().limits[0].pct_rounded(), Some(42));
+        assert!(load_cache(&file, url, ttl).is_some(), "re-stamped as fresh");
+
+        // a cache written for another endpoint is ignored
+        assert!(load_cache(&file, "http://other/x", ttl).is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
